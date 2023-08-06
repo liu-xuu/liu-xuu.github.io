@@ -1,1518 +1,249 @@
 ---
 layout:     post
-title:      ReactiveCocoa 进阶
-subtitle:   函数式编程框架 ReactiveCocoa 进阶
-date:       2017-01-06
+title:      Nav导航-代价地图
+#subtitle:   
+date:       2023-08-06
 author:     BY
 header-img: img/post-bg-ios9-web.jpg
 catalog: true
 tags:
-    - iOS
-    - ReactiveCocoa
-    - 函数式编程
-    - 开源框架
+    - ROS
+    - Nav导航
+    - 路径规划
+    - 代价地图
 ---
-# 前言
 
->在[上篇文章](http://qiubaiying.github.io/2016/12/26/ReactiveCocoa-基础/)中介绍了**ReactiveCocoa**的基础知识,接下来我们来深入介绍**ReactiveCocoa**及其在**MVVM**中的用法。
+## 前言
+首先了解在导航堆中，move_base包与其它包（如amcl、map_server）的关系，如图所示
+![nv](https://img-blog.csdnimg.cn/b7d2cb2863ed49db997ed0da4984a486.png)
 
+发布导航命令
 
-![ReactiveCocoa进阶思维导图](https://ww3.sinaimg.cn/large/006y8lVagw1fbgye3re5xj30je0iomz8.jpg)
-# 常见操作方法介绍
+```cpp
+rostopic pub /move_base_simple/goal geometry_msgs/PoseStamped "header:
+  seq: 0
+  stamp:
+    secs: 0
+    nsecs: 0
+  frame_id: 'map'
+pose:
+  position:
+    x: 60.0
+    y: -6.0
+    z: 0.0
+  orientation:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    w: 1.0"
+```
 
+导航过程中如果出现错误，终止导航命令
 
-#### 操作须知
+```cpp
+rostopic pub /move_base/cancel actionlib_msgs/GoalID -- {}
+```
 
-所有的信号（RACSignal）都可以进行操作处理，因为所有操作方法都定义在RACStream.h中，因此只要继承RACStream就有了操作处理方法。
-#### 操作思想
+## 全局路径规划调试
+可以使用动态调参工具（不会保存修改记录，每次修改自己作记录）[参考链接](https://blog.csdn.net/pricem/article/details/122891310?ops_request_misc=&request_id=&biz_id=102&utm_term=teb%E5%AF%BC%E8%88%AA%E4%B8%8D%E8%83%BD%E8%BF%87%E7%AA%84%E9%81%93&utm_medium=distribute.pc_search_result.none-task-blog-2~all~sobaiduweb~default-3-122891310.142%5Ev67%5Ewechat_v2,201%5Ev3%5Econtrol_2,213%5Ev2%5Et3_control1&spm=1018.2226.3001.4187)
 
-运用的是Hook（钩子）思想，Hook是一种用于改变API(应用程序编程接口：方法)执行结果的技术.
+```cpp
+rosrun rqt_reconfigure rqt_reconfigure
+```
+为了更好调参，将cmd_vel话题重映射，即让小车不动，先调好全局路径，move_base.launch
 
-Hook用处：截获API调用的技术。
+```cpp
+<remap from="/cmd_vel" to="/cmd_vel_1" />
+```
 
-有关Hook的知识可以看我的这篇博客[《Objective-C Runtime 的一些基本使用》](http://www.jianshu.com/p/ff114e69cc0a)中的 *更换代码的实现方法* 一节,
-
-Hook原理：在每次调用一个API返回结果之前，先执行你自己的方法，改变结果的输出。
-
-#### 操作方法
-
-#### **bind**（绑定）- ReactiveCocoa核心方法
-
-**ReactiveCocoa** 操作的核心方法是 **bind**（绑定）,而且也是RAC中核心开发方式。之前的开发方式是赋值，而用RAC开发，应该把重心放在绑定，也就是可以在创建一个对象的时候，就绑定好以后想要做的事情，而不是等赋值之后在去做事情。
-
-列如，把数据展示到控件上，之前都是重写控件的 `setModel` 方法，用RAC就可以在一开始创建控件的时候，就绑定好数据。
-
-- **作用**
-
-	RAC底层都是调用**bind**， 在开发中很少直接使用 **bind** 方法，**bind**属于RAC中的底层方法，我们只需要调用封装好的方法，**bind**用作了解即可.
-
-- **bind方法使用步骤**
-     1. 传入一个返回值 `RACStreamBindBlock` 的 block。
-     2. 描述一个 `RACStreamBindBlock` 类型的 `bindBlock`作为block的返回值。
-     3. 描述一个返回结果的信号，作为 `bindBlock` 的返回值。
-     
-     注意：在bindBlock中做信号结果的处理。
-- 	**bind方法参数**
-	
-	**RACStreamBindBlock**:
-`typedef RACStream * (^RACStreamBindBlock)(id value, BOOL *stop);`
-
-     `参数一(value)`:表示接收到信号的原始值，还没做处理
-     
-     `参数二(*stop)`:用来控制绑定Block，如果*stop = yes,那么就会结束绑定。
-     
-     `返回值`：信号，做好处理，在通过这个信号返回出去，一般使用 `RACReturnSignal`,需要手动导入头文件`RACReturnSignal.h`
-
-- **使用**
-
-	假设想监听文本框的内容，并且在每次输出结果的时候，都在文本框的内容拼接一段文字“输出：”
-
-	- 使用封装好的方法：在返回结果后，拼接。
-
-		```
-		[_textField.rac_textSignal subscribeNext:^(id x) {
-		
-			// 在返回结果后，拼接 输出：
-			NSLog(@"输出:%@",x);
-		
-		}];
-		```
+## 什么是costmap？[参考链接](https://blog.csdn.net/shoufei403/article/details/104068107?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522166986407416800180619183%2522%252C%2522scm%2522%253A%252220140713.130102334.pc%255Fall.%2522%257D&request_id=166986407416800180619183&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~first_rank_ecpm_v1~rank_v31_ecpm-2-104068107-null-null.142%5Ev67%5Ewechat_v2,201%5Ev3%5Econtrol_2,213%5Ev2%5Et3_control1&utm_term=global%20costmap%20%E5%A2%99%E7%9A%84%E8%86%A8%E8%83%80%E8%B7%9D%E7%A6%BB&spm=1018.2226.3001.4187)
+![costmap](https://img-blog.csdnimg.cn/5369c77a3b4c400a9e0012f70b9db1b5.png)
+costmap翻译过来是代价地图的意思。由SLAM算法生成栅格地图。我们为栅格地图中的每一个栅格分配一个代价值，这样就形成了costmap。路径规划算法则可以在具有代价的栅格地图上生成路径。规划路径的生成则是强依赖于代价值。为了生成合适的路径，我们需要为每个栅格分配合适的代价值。最开始想到的是在单层的costmap中更新每个栅格的代价，然后直接给路径规划算法。但这样会引起诸多问题。比如因为所有的数据都在同一个costmap中更新，任何一个数据的变动都需要拿到之前其他的数据重新一起计算代价值。比如数据更新的地图范围也不好确定。比如当数据类型多了之后，数据整合的顺序不好控制。
+后来想到将单层的costmap分成多层是个好办法。如上图所示，一层costmap只用同一种数据来更新。比如最底层的static map就是SLAM算法生成的静态地图。使用静态地图数据生成一层costmap。Obstacles 层则是由传感器数据更新的costmap层。甚至可以根据某些特殊目的自定义一个costmap层，使生成的路径规避某些区域。这在单层的costmap算法中是很难实现的。最后将所有的costmap层按特定的顺序组合起来形成了layered_costmap。可以看到这是一种更为灵活，扩展性也更强的方法。
+*成本图参数的调整对于本地规划者的成功至关重要（不仅对于DWA）。在ROS中，代价地图由静态地图层、障碍地图层和膨胀层组成。静态地图层直接解释提供给导航堆栈的给定静态SLAM地图。障碍物地图层包括二维障碍和三维障碍（三维像素层）。膨胀层是一个障碍物膨胀的地方，用来计算每个二维成本图单元的成本。此外，还有一个global costmap和一个local costmap。global costmap是通过向导航点提供的地图上的障碍物膨胀而生成的。通过对机器人传感器实时检测到的障碍物进行膨胀，生成local costmap。*
+*static map和Obstacles层都有一个costmap_，而layered_costmap类也维护了一个costmap_，并且这个costmap_最终组合了其他几个层的costmap_。而inflation层没有维护costmap_，它直接将cost值更新到了LayeredCostmap的costmap_里。*
+*算法中仅使用footprint来计算inscribed_radius_（底盘内径）和circumscribed_radius_（底盘外径）。膨胀半径使用inflation_radius参数来设定*
 
 
-	- 方式二:，使用RAC中 `bind` 方法做处理，在返回结果前，拼接。
-	  
-		这里需要手动导入`#import <ReactiveCocoa/RACReturnSignal.h>`，才能使用`RACReturnSignal`
+## costmap_common_params.yaml [参考链接](https://blog.csdn.net/qq_42406643/article/details/118754093?spm=1001.2101.3001.6661.1&utm_medium=distribute.pc_relevant_t0.none-task-blog-2~default~CTRLIST~Rate-1-118754093-blog-123262433.pc_relevant_3mothn_strategy_and_data_recovery&depth_1-utm_source=distribute.pc_relevant_t0.none-task-blog-2~default~CTRLIST~Rate-1-118754093-blog-123262433.pc_relevant_3mothn_strategy_and_data_recovery&utm_relevant_index=1)
+该文件存储代价地图需要监听的传感器话题，代价地图公有参数等，全局代价地图和局部代价地图公有的参数放置进来，如此只需要载入这个配置文件就能完成共有参数的配置，避免了在全局代价地图和局部代价地图配置文件中重复配置一些相同参数的冗余。
 
-		```	
-		[[_textField.rac_textSignal bind:^RACStreamBindBlock{
-		   // 什么时候调用:
-		   // block作用:表示绑定了一个信号.
-		
-		   return ^RACStream *(id value, BOOL *stop){
-		
-		       // 什么时候调用block:当信号有新的值发出，就会来到这个block。
-		
-		       // block作用:做返回值的处理
-		
-		       // 做好处理，在返回结果前，拼接 输出:
-		       return [RACReturnSignal return:[NSString stringWithFormat:@"输出:%@",value]];
-		   };
-		
-		}] subscribeNext:^(id x) {
-		
-		   NSLog(@"%@",x);
-		
-		}];
+**配置文件**
 
-		```
-
-- **底层实现**
-     1. 源信号调用bind,会重新创建一个绑定信号。
-     2. 当绑定信号被订阅，就会调用绑定信号中的 `didSubscribe` ，生成一个 `bindingBlock` 。
-     3. 当源信号有内容发出，就会把内容传递到 `bindingBlock` 处理，调用`bindingBlock(value,stop)`
-     4. 调用`bindingBlock(value,stop)`，会返回一个内容处理完成的信号`RACReturnSignal`。
-     5. 订阅`RACReturnSignal`，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-    
-     注意:不同订阅者，保存不同的nextBlock，看源码的时候，一定要看清楚订阅者是哪个。
-
-#### 映射
-
-映射主要用这两个方法实现：**flattenMap**,**Map**,用于把源信号内容映射成新的内容。
-
-###### flattenMap
-
-- **作用**
-
-	把源信号的内容映射成一个新的信号，信号可以是任意类型
-
-- **使用步骤**
-
-     1. 传入一个block，block类型是返回值`RACStream`，参数value
-     2. 参数value就是源信号的内容，拿到源信号的内容做处理
-     3. 包装成`RACReturnSignal`信号，返回出去。
-
-
-
-- **使用**
-
-	监听文本框的内容改变，把结构重新映射成一个新值.
-	
-	```
-	[[_textField.rac_textSignal flattenMap:^RACStream *(id value) {
-        
-        // block调用时机：信号源发出的时候
-        
-        // block作用：改变信号的内容
-        
-        // 返回RACReturnSignal
-        return [RACReturnSignal return:[NSString stringWithFormat:@"信号内容：%@", value]];
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    ```
-- **底层实现**
-
-     0. **flattenMap**内部调用 `bind` 方法实现的,**flattenMap**中block的返回值，会作为bind中bindBlock的返回值。
-     1. 当订阅绑定信号，就会生成 `bindBlock`。
-     2. 当源信号发送内容，就会调用` bindBlock(value, *stop)`
-     3. 调用`bindBlock`，内部就会调用 **flattenMap** 的 bloc k，**flattenMap** 的block作用：就是把处理好的数据包装成信号。
-     4. 返回的信号最终会作为 `bindBlock` 中的返回信号，当做 `bindBlock` 的返回信号。
-     5. 订阅 `bindBlock` 的返回信号，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-	
-###### Map
-
-- **作用**
+```cpp
+# map_type: voxel/costmap
+footprint: [[0.16, 0.12], [0.16,-0.12], [-0.16, -0.12], [-0.16, 0.12]]
+obstacle_layer:
+  enabled: true
+  max_obstacle_height: 0.6
+  min_obstacle_height: 0.0
+  obstacle_range: 2.5
+  raytrace_range: 3.0
+  inflation_radius: 0.20
+  combination_method: 1
+  observation_sources: laser_scan_sensor 
+  track_unknown_space: true
  
-	把源信号的值映射成一个新的值
-
-	
-- **使用步骤**
-     1. 传入一个block,类型是返回对象，参数是 `value`
-     2. `value`就是源信号的内容，直接拿到源信号的内容做处理
-     3. 把处理好的内容，直接返回就好了，不用包装成信号，返回的值，就是映射的值。
-    
-- **使用**
-
-	监听文本框的内容改变，把结构重新映射成一个新值.
-     
-    ```
-	[[_textField.rac_textSignal map:^id(id value) {
-       
-       // 拼接完后，返回对象
-        return [NSString stringWithFormat:@"信号内容: %@", value];
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	```
-- **底层实现**:
-     0. Map底层其实是调用 `flatternMa`p,`Map` 中block中的返回的值会作为 `flatternMap` 中block中的值
-     1. 当订阅绑定信号，就会生成 `bindBlock` 
-     3. 当源信号发送内容，就会调用 `bindBlock(value, *stop)`
-     4. 调用 `bindBlock` ，内部就会调用 `flattenMap的block`
-     5. `flattenMap的block` 内部会调用 `Map` 中的block，把 `Map` 中的block返回的内容包装成返回的信号
-     5. 返回的信号最终会作为 `bindBlock` 中的返回信号，当做 `bindBlock` 的返回信号
-     6. 订阅 `bindBlock` 的返回信号，就会拿到绑定信号的订阅者，把处理完成的信号内容发送出来。
-
-###### FlatternMap 和 Map 的区别
--  **FlatternMap** 中的Block **返回信号**。 
-2. **Map** 中的Block **返回对象**。
-3. 开发中，如果信号发出的值 **不是信号** ，映射一般使用 `Map`
-4. 如果信号发出的值 **是信号**，映射一般使用 `FlatternMap`。
+  origin_z: 0.0
+  z_resolution: 0.1
+  z_voxels: 10
+  unknown_threshold: 15
+  mark_threshold: 0
+  publish_voxel_map: true
+  footprint_clearing_enabled: true
 
 
+  laser_scan_sensor:
+    data_type: LaserScan
+    topic: /scan
+    marking: true
+    clearing: true
+    expected_update_rate: 0
+    min_obstacle_height: 0.00
+    max_obstacle_height: 0.30
+inflation_layer:
 
-- `signalOfsignals`用 **FlatternMap**
+  enabled: true
 
-	```
-    // 创建信号中的信号
-    RACSubject *signalOfsignals = [RACSubject subject];
-    RACSubject *signal = [RACSubject subject];
+  cost_scaling_factor: 5.0
 
-    [[signalOfsignals flattenMap:^RACStream *(id value) {
+  inflation_radius: 0.2
+static_layer:
 
-     // 当signalOfsignals的signals发出信号才会调用
+  enabled: true
+```
+配置参数分为2类：机器人形状和代价地图各layer图层。代价地图各layer图层包括：静态层static_layer（由SLAM建立得到的地图提供数据）、障碍层obstacle_layer（由激光雷达等障碍扫描传感器提供实时数据）、膨胀层inflation_layer（在以上两层地图上进行膨胀（向外扩张），以避免机器人撞上障碍物）或者有voxel_layer体素层，Other Layers（你还可以通过插件的形式自己实现costmap，目前已有Social Costmap Layer、Range Sensor Layer等开源插件）。
 
-        return value;
+ - 障碍物层obstacle_layer和体素层voxel_layer：这两层负责标注代价图上的障碍，他们可以被称为障碍层。障碍物层跟踪二维的，体素层跟踪三维的。障碍物是根据机器人传感器的数据进行检测或清除，其中需要订阅代价图的主题。在 ROS 执行中，体素层从障碍物层继承，并且都是通过使用激光雷达发布的 Point Cloud 或 PointCloud2类型的消息来获取障碍物信息。此外，体素层需要深度传感器，如 Microsoft Kinect 或华硕 Xtion 3D障碍物最终会被膨胀为二维代价图。
+ - map_type: voxel 地图类型，这里为voxel(体素地图)。另一种地图类型为costmap(代价地图)。这两者之间的区别是前者是世界的3D表示，后者为世界的2D表示。
+ - footprint：指机器人的轮廓，用于探知机器人是否能穿过某个障碍物（如门）。在ROS中，它由二维数组表示[x0,y0] ; [x1,y1] ; [x2,y2]（坐标的起点应该是机器人的中心，机器人的中心被认为是原点(0.0,0.0)，顺时针和逆时针都可以，不需要重复第一个坐标，单位是米）。该占位面积将用于计算内切圆和外接圆的半径，用于以适合此机器人的方式对障碍物进行膨胀。为了安全起见，通常将设置的稍大于机器人的实际轮廓。获取方式：（1）参考机器人的图纸。（2）自行绘制轮廓，然后选择一些顶点并使用标尺来确定它们的坐标。需要注意，x方向是机器人正直前进方向，给出footprint这几个点的时候要考虑到坐标系，要设置正确机器人的x轴。
+![footprint](https://img-blog.csdnimg.cn/a531655d8a854147a11c9e9b542079c5.png)
 
-    }] subscribeNext:^(id x) {
+ **obstacle_layer：配置障碍物图层**[参考链接](https://blog.csdn.net/luohuiwu/article/details/93653770?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522166988101716782388068364%2522%252C%2522scm%2522%253A%252220140713.130102334..%2522%257D&request_id=166988101716782388068364&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~baidu_landing_v2~default-1-93653770-null-null.142%5Ev67%5Ewechat_v2,201%5Ev3%5Econtrol_2,213%5Ev2%5Et3_control1&utm_term=%E5%85%A8%E5%B1%80%E4%BB%A3%E4%BB%B7%E5%9C%B0%E5%9B%BE%E7%9A%84%E8%86%A8%E8%83%80%E5%8D%8A%E5%BE%84&spm=1018.2226.3001.4187)
 
-        // 只有signalOfsignals的signal发出信号才会调用，因为内部订阅了bindBlock中返回的信号，也就是flattenMap返回的信号。
-        // 也就是flattenMap返回的信号发出内容，才会调用。
+                                                              
+ - enabled：是否启用该层
+ - combination_method：只能设置为0或1，用来更新地图上的代价值，一般设置为1
+ - track_unknown_space:如果设置为false，那么地图上代价值就只分为致命碰撞和自由区域两种，如果设置为true，那么就分为致命碰撞，自由区域和未知区域三种
+ - min/max_obstacle_height：插入代价图中的障碍物的最小/最大高度。该参数设置为稍高于机器人的高度。对于体素层，一般就是体素网格的高度
+ - obstacle_range：设置机器人检测障碍物的最大范围。例如obstacle_range设为6.0，只有当机器人检测到一个距离小于6m的障碍物时，才会将这个障碍物引入到代价地图中。并可以在每个传感器的基础上进行覆盖
+ - raytrace_range：用来设置机器人检测自由空间的最大范围。此参数用于机器人运动过程中，实时清除代价地图中的障碍物，例如设置为7.0，在机器人将根据传感器的信息，清除机器人前方7m远内障碍物信息，使得无障碍区域变为自由空间。以米为单位
+ **这些参数仅用于体素层（VoxelCostMapPlugin）**
+ - origin_z：地图的 Z 轴原点，以米为单位，仅对voxel地图
+ - z_resolution：地图 Z 轴精度
+ - z_voxels：每个垂直列中的体素数，网格的高度是 Z 轴分辨率*Z 轴体素数
+ - unknown_threshold：当整列的voxel是“已知”(``known’’)的时候，含有的未知单元(“unknown”)的最大数量
+ - mark_threshold：在被认为是“自由”的列中允许的标记单元的最大数量/整列voxel是“自由”(“free”)的时候，含有的已标记的cell(“marked”)的最大数目
+ - publish_voxel_map: false #是否发布底层的体素栅格地图，其主要用于可视化
+ **数据源**
+ - **observation_sources:** scan bump # 观察源，我们这里是激光数据(scan)和凸点数据(bump)。观察源列表以空格分割表示，定义了下面参数中每一个 <source_name> 命名空间。**sensor_frame**: 参数应设置为传感器坐标帧的名称, **observation_persistence**: 设置传感器读数保存多长时间，单位为 seconds 。若设为0.0，则为保存最新读数信息。**expected_update_rate**: 读取传感器数据的频率，单位为 seconds 。若设为0.0，则为不断续地读取传感器数据。如果每0.05秒进行一次激光扫描，可以将此参数设置为0.1秒，以提供大量的缓冲区并占用一定的系统延迟, **max_obstacle_height**: 为传感器读数的最大有效高度，通常设置为略高于机器人的高度。将此参数设置为大于全局**max_obstacle_height**参数的值，则此参数无效；设置为小于全局**max_obstacle_height**的值将过滤掉高于该高度的该传感器的点, **min_obstacle_height**: 指传感器读数的最小有效高度，传感器读数的最小高度（以米为单位）被认为有效。这通常设置为地面高度，但可以根据传感器的噪声模型设置更高或更低, **data_type**: 参数应设置为LaserScan或PointCloud，这取决于主题使用的消息, **topic**: 设置为发布传感器数据的话题的名称，如/scan.**marking**: 是否将传感器数据用于向代价地图添加障碍物信息, **clearing**: 是否从代价地图清除障碍信息, **obstacle_range:**将障碍物插入代价地图的最大范围, **raytrace_range**: 从地图中扫描出障碍物的最大范围
+***注意：***[参考链接](https://blog.csdn.net/u013468614/article/details/83386987?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522166969211016800182137667%2522%252C%2522scm%2522%253A%252220140713.130102334.pc%255Fall.%2522%257D&request_id=166969211016800182137667&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~first_rank_ecpm_v1~rank_v31_ecpm-1-83386987-null-null.142%5Ev67%5Ewechat,201%5Ev3%5Econtrol_2,213%5Ev2%5Et3_esquery_v1&utm_term=The%20origin%20for%20the%20sensor%20at%20%280.03,%200.03%29%20is%20out%20of%20map%20bounds.%20So,%20the%20costmap%20cannot%20raytrace%20for%20it.&spm=1018.2226.3001.4187)
+   出现以下警告
+   
 
-        NSLog(@"signalOfsignals：%@",x);
-    }];
+```cpp
+[ WARN] [1540470442.937371426, 3.000000000]: The origin for the sensor at (2.00, 1.98, 0.40) is out of map bounds. So, the costmap cannot raytrace for it.
+[ WARN] [1540470443.935926596, 4.000000000]: The origin for the sensor at (2.00, 1.98, 0.40) is out of map bounds. So, the costmap cannot raytrace for it.
+[ WARN] [1540470444.935980333, 5.000000000]: The origin for the sensor at (2.00, 1.98, 0.40) is out of map bounds. So, the costmap cannot raytrace for it.
+[ WARN] [1540470445.936014597, 6.000000000]: The origin for the sensor at (2.00, 1.98, 0.40) is out of map bounds. So, the costmap cannot raytrace for it.
 
-    // 信号的信号发送信号
-    [signalOfsignals sendNext:signal];
+```
+必须保证`z_voxels * z_resolution > max_obstacle_height`
+**实验观察**
+实验进一步阐明了体素层参数的影响。我们使用Asus Xtion Pro作为深度传感器。我们发现X离子的位置决定了“盲区”的范围，即深度传感器看不到任何东西的区域。
 
-    // 信号发送内容
-    [signal sendNext:@"hi"];
-	
-	```
-	
-#### 组合
+此外，仅当障碍物出现在局部代价地图更新范围内时，表示障碍物的体素才会更新（标记或清除）。否则，一些体素信息将保留，它们对Costmap膨胀的影响仍然存在。此外，Z分辨率控制体素在Z轴上的密度。如果它更高，体素层更密集。如果该值太低（例如0.01），所有体素将被组合在一起，因此您将无法获得有用Costmap信息。如果将Z分辨率设置为更高的值，您的目的应该是更好地获取障碍，因此需要增加Z体素参数，该参数控制多少个体素。在每个垂直列中。如果一列中的体素太多，但分辨率不够，这也是无用的，因为每个垂直列都有高度限制。
 
-组合就是将多个信号按照某种规则进行拼接，合成新的信号。
+ **inflation_layer：配置膨胀层**
+        *通过下图来认识下为何要设置膨胀层以及意义：*
+        ![膨胀](https://img-blog.csdnimg.cn/a95b9c480dbc41ad84056ca9f4455f6a.png)
 
-###### concat
 
-- **作用** 
+ - enabled：是否启用该层
+ - cost_scaling_factor：膨胀过程中应用到代价值的比例因子，增大该比例因子会降低代价值
+ - inflation_radius：膨胀半径，膨胀层会把障碍物代价膨胀直到该半径为止，一般将该值设置为机器人底盘的直径大小
+ - inflation_radius 和 cost_scaling_factor 是决定膨胀的主要参数。inflation_radius 控制零成本点距离障碍物有多远，膨胀层会把障碍物的代价膨胀直到该半径为止。cost_scaling_factor 越大，膨胀点越宽，代价地图的边界越平滑，使得机器人越来越靠中间，远离墙边或障障碍物
+**Pronobis博士建议**，最佳的Costmap衰减曲线是一条坡度相对较低的曲线，因此，最佳路径尽可能远离两侧的障碍物。其优点是机器人更喜欢在障碍物中间移动。如图8和图9所示，在相同的起点和目标下，当Costmap曲线陡峭时，机器人倾向于接近障碍物。在图14中，膨胀半径=0.55，成本比例系数=5.0；在图15中，膨胀半径=1.75，成本比例系数=2.58
+![cost](https://img-blog.csdnimg.cn/2eca6d0635aa4bc9a961844788c97e5d.png)
 
-	按**顺序拼接**信号，当多个信号发出的时候，有顺序的接收信号。
-- **底层实现**
-     1. 当拼接信号被订阅，就会调用拼接信号的didSubscribe
-     2. didSubscribe中，会先订阅第一个源信号（signalA）
-     3. 会执行第一个源信号（signalA）的didSubscribe
-     4. 第一个源信号（signalA）didSubscribe中发送值，就会调用第一个源信号（signalA）订阅者的nextBlock,通过拼接信号的订阅者把值发送出来.
-     5. 第一个源信号（signalA）didSubscribe中发送完成，就会调用第一个源信号（signalA）订阅者的completedBlock,订阅第二个源信号（signalB）这时候才激活（signalB）。
-     6. 订阅第二个源信号（signalB）,执行第二个源信号（signalB）的didSubscribe
-     7. 第二个源信号（signalA）didSubscribe中发送值,就会通过拼接信号的订阅者把值发送出来.
-- **使用步骤**
+![cost](https://img-blog.csdnimg.cn/bbedc9da8cf54e4cbd18719fc52e77ae.png)
+在衰减曲线图的基础上，对这两个参数进行设置，使膨胀半径几乎覆盖了腐蚀体，且成本值衰减适中，这意味着降低了cost scaling factor的值。
+## global_costmap_params.yaml
 
-	1. 使用`concat:`拼接信号
-	2. 订阅拼接信号，内部会自动按拼接顺序订阅信号
-- **使用**
+```cpp
+global_costmap:
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 1.0
+  publish_frequency: 1.0
+  static_map: true
+  
+  rolling_window: false
+  resolution: 0.05
+  
+  transform_tolerance: 1.0
+  #inflation_radius: 0.1
+  plugins:
+     - {name: static_layer,            type: "costmap_2d::StaticLayer"}
+     - {name: obstacle_layer,          type: "costmap_2d::ObstacleLayer"}
+     - {name: inflation_layer,         type: "costmap_2d::InflationLayer"}
 
-	拼接信号 `signalA`、 `signalB`、 `signalC`
-	
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"Hello"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"World"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalC = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"!"];
-        
-        [subscriber sendCompleted];
-        
-        return nil;
-    }];
-    
-    // 拼接 A B, 把signalA拼接到signalB后，signalA发送完成，signalB才会被激活。
-    RACSignal *concatSignalAB = [signalA concat:signalB];
-    
-    // A B + C
-    RACSignal *concatSignalABC = [concatSignalAB concat:signalC];
-    
-    
-    // 订阅拼接的信号, 内部会按顺序订阅 A->B->C
-    // 注意：第一个信号必须发送完成，第二个信号才会被激活...
-    [concatSignalABC subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	```
+```
 
-######  then
-- **作用** 
+ - global_frame：全局代价地图需要在哪个坐标系下运行
+ - robot_base_frame：在全局代价地图中机器人本体的基坐标系。通过global_frame和robot_base_frame就可以计算两个坐标系之间的变换，得知机器人在全局坐标系global_frame中的坐标了
+ - update_frequency：全局代价地图更新频率，一般全局代价地图更新频率设置的比较小，每个周期内，根据传感器信息mark/clear地图中的网格
+ - publish_frequency：全局代价地图的发布频率，只用于Rviz可视化，这个参数没必要太大
+ - static_map：配置是否使用map_server提供的地图来初始化，因为全局地图都是静态的，一般都设置为true
+ - rolling_window：是否在机器人移动过程中需要滚动窗口，始终保持机器人在当前窗口中心位置，一般false
+ - resolution：栅格地图的分辨率，该分辨率可以从加载的地图相对应的配置文件中获取到
+ - inflation_radius：全局代价地图的膨胀半径
+ - transform_tolerance：坐标系间的转换可以忍受的最大延时
+ - plugins：在global_costmap中使用下面三个插件来融合三个不同图层，分别是static_layer、obstacle_layer和inflation_layer，合成一个master_layer来进行全局路径规划。**{name: static_layer, type: "costmap_2d::StaticLayer"}** 静态地图层
+**{name: obstacle_layer, type: "costmap_2d::VoxelLayer"}** 障碍地图层
+这里有个疑问：为什么obstacle_layer的类型不是普通的costmap_2d::ObstacleLayer？Turtlebot为什么将它设置为costmap_2d::VoxelLayer?其实在costmap_common_params.yaml也提到了，开启bump输入源是为了更好地可视化整个voxel层的情况，方便调试。所以这里将obstacle_layer的地图类型设置为costmap_2d::VoxelLayer。
+**{name: inflation_layer, type: "costmap_2d::InflationLayer"}** 膨胀地图层，用于留出足够的安全距离
 
-	用于连接两个信号，当第一个信号完成，才会连接then返回的信号。
-- **底层实现**
-	
-	1. 先过滤掉之前的信号发出的值
-	2. 使用concat连接then返回的信号
-	
-- **使用**
 
-	```
-   [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
+## local_costmap_params.yaml
+
+```cpp
+local_costmap:
+  global_frame: odom
+  robot_base_frame: base_link
+  update_frequency: 3.0
+  publish_frequency: 3.0
+  #static_map: false
+  rolling_window: true
+  width: 2.5
+  height: 2.5
+  resolution: 0.05
+  plugins: 
+  - {name: obstacle_layer, type: "costmap_2d::ObstacleLayer"} 
+  - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+```
+ 
+
+ - global_frame：在局部代价地图中的全局坐标系，一般需要设置为odom_frame
+ - robot_base_frame：机器人本体的基坐标系
+ - update_frequency：局部代价地图的更新频率，每个周期内，根据传感器信息mark/clear地图中的网格
+ - publish_frequency：局部代价地图的发布频率，只用于Rviz可视化，这个参数没必要太大
+ - static_map：局部代价地图一般不设置为静态地图，因为需要检测是否在机器人附近有新增的动态障碍物
+ - rolling_window：使用滚动窗口，始终保持机器人在当前局部地图的中心位置
+ - width：代价地图（滚动窗口）的宽度，单位米
+ - resolution：代价地图（滚动窗口）的分辨率，注意，这里的分辨率可以不同于所建地图的分辨率，但一般情况下该参数的值与所建的地图一致
+ - transform_tolerance：局部代价地图中的坐标系之间转换的最大可忍受延时
+ - plugins：在局部代价地图中，不需要静态地图层，因为我们使用滚动窗口来不断的扫描障碍物，所以就需要融合两层地图（inflation_layer和obstacle_layer）即可，融合后的地图用于进行局部路径规划
+**costmap resolution**
+      本地代价地图和全局代价地图可以分别设置此参数。它们影响计算负载和路径规划。当低分辨率（>=0.05）时，在狭窄的通道中，障碍区域可能会重叠，因此local planner无法找到通过的路径。
+      对于全局代价地图分辨率，它足以保持与提供给导航堆栈的地图的分辨率相同。如果你有足够的计算能力，你应该看看激光扫描仪的分辨率，因为当使用gmapping创建地图，如果激光扫描仪的分辨率低于您所需的地图分辨率，将会有很多小的“未知点”，因为激光扫描仪无法覆盖该区域，如图16所示。
+      ![cost](https://img-blog.csdnimg.cn/b1887634d7b349a3b189d1a59e6365a9.png)
+例如，Hokuyo URG-04LX-UG01激光扫描仪的公制分辨率为0.01mm。因此，扫描分辨率<=0.01的地图需要机器人旋转几次以清除未知的点。我们发现0.02是一个足够的解决方案。
       
-      [subscriber sendNext:@1];
+
       
-      [subscriber sendCompleted];
-      
-      return nil;
-      
-    }] then:^RACSignal *{
-      
-      	return [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-          
-          [subscriber sendNext:@2];
-          
-          return nil;
-      }];
-      
-    }] subscribeNext:^(id x) {
-      
-      // 只能接收到第二个信号的值，也就是then返回信号的值
-      NSLog(@"%@", x);
-      
-    }];
-    
-    ///
-    输出：2
-	```
-- **注意**
+   
 
-	注意使用`then`，之前信号的值会被忽略掉.
+ 
 
-###### merge
-- **作用** 
-	
-	合并信号,任何一个信号发送数据，都能监听到.
-- **底层实现**
-
-     1. 合并信号被订阅的时候，就会遍历所有信号，并且发出这些信号。
-     2. 每发出一个信号，这个信号就会被订阅
-     3. 也就是合并信号一被订阅，就会订阅里面所有的信号。
-     4. 只要有一个信号被发出就会被监听。
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A"];
-        
-        return nil;
-    }];
-
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B"];
-        
-        return nil;
-    }];
-
-    // 合并信号, 任何一个信号发送数据，都能监听到
-    RACSignal *mergeSianl = [signalA merge:signalB];
-
-    [mergeSianl subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-	2017-01-03 13:29:08.013 ReactiveCocoa进阶[3627:718315] A
-	2017-01-03 13:29:08.014 ReactiveCocoa进阶[3627:718315] B
-
-    
-	```
-
-###### zip
-
-- **作用** 
-	
-	把两个信号压缩成一个信号，只有当两个信号 **同时** 发出信号内容时，并且把两个信号的内容合并成一个元组，才会触发压缩流的next事件。
-- **底层实现**
-	
-	1. 定义压缩信号，内部就会自动订阅signalA，signalB
-	2. 每当signalA或者signalB发出信号，就会判断signalA，signalB有没有发出个信号，有就会把每个信号 第一次 发出的值包装成元组发出
-	     
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    RACSignal *zipSignal = [signalA zipWith:signalB];
-    
-    [zipSignal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-	
-	// 输出
-	2017-01-03 13:48:09.234 ReactiveCocoa进阶[3997:789720] zipWith: <RACTuple: 0x600000004df0> (
-    A1,
-    B1
-	)
-	2017-01-03 13:48:09.234 ReactiveCocoa进阶[3997:789720] zipWith: <RACTuple: 0x608000003410> (
-    A2,
-    B2
-	)
-	```
-	
-	
-###### combineLatest
-- **作用** 
-	
-	将多个信号合并起来，并且拿到各个信号最后一个值,必须每个合并的signal至少都有过一次sendNext，才会触发合并的信号。
-
-- **底层实现**
-	
- 	1. 当组合信号被订阅，内部会自动订阅signalA，signalB,必须两个信号都发出内容，才会被触发。
- 	2. 并且把两个信号的 最后一次 发送的值组合成元组发出。
-	     
-- **使用**
-
-	```
-	RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    RACSignal *combineSianal = [signalA combineLatestWith:signalB];
-    
-    [combineSianal subscribeNext:^(id x) {
-        
-        NSLog(@"combineLatest:%@", x);
-    }];
-	
-	// 输出
-	2017-01-03 13:48:09.235 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x60800000e150> (
-    A2,
-    B1
-	)
-	2017-01-03 13:48:09.235 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x600000004db0> (
-    A2,
-    B2
-	)
-	2017-01-03 13:48:09.236 ReactiveCocoa进阶[3997:789720] combineLatest:<RACTuple: 0x60800000e180> (
-    A2,
-    B3
-	)
-	```
-	
-- **注意**
-
-	**combineLatest**与**zip**用法相似，必须每个合并的signal至少都有过一次sendNext，才会触发合并的信号。
-	
-	区别看下图：
-	
-	![](https://ww2.sinaimg.cn/large/006y8lVagw1fbdf6cyez6j30id0kkabf.jpg)
-
-
-###### reduce   
-
-- **作用** 
-	
-	把信号发出元组的值聚合成一个值
-- **底层实现**
-	
- 	1. 订阅聚合信号，
- 	2. 每次有内容发出，就会执行reduceblcok，把信号内容转换成reduceblcok返回的值。
-	     
-- **使用**
-
-     常见的用法，（先组合在聚合）`combineLatest:(id<NSFastEnumeration>)signals reduce:(id (^)())reduceBlock`
-     
-     reduce中的block简介:
-     
-     reduceblcok中的参数，有多少信号组合，reduceblcok就有多少参数，每个参数就是之前信号发出的内容
-     reduceblcok的返回值：聚合信号之后的内容。
-
-
-
-	```
-	    RACSignal *signalA = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"A1"];
-        [subscriber sendNext:@"A2"];
-        
-        return nil;
-    }];
-    
-    RACSignal *signalB = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"B1"];
-        [subscriber sendNext:@"B2"];
-        [subscriber sendNext:@"B3"];
-        
-        return nil;
-    }];
-    
-    
-    RACSignal *reduceSignal = [RACSignal combineLatest:@[signalA, signalB] reduce:^id(NSString *str1, NSString *str2){
-        
-        return [NSString stringWithFormat:@"%@ %@", str1, str2];
-    }];
-    
-    [reduceSignal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-    2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B1
-	2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B2
-	2017-01-03 15:42:41.803 ReactiveCocoa进阶[4248:1264674] A2 B3
-    
-	```
-	
-#### 过滤
-
-过滤就是过滤信号中的 特定值 ，或者过滤指定 发送次数 的信号。
-
-###### filter
-
-- **作用**
-
-	过滤信号，使用它可以获取满足条件的信号.
-	
-	block的返回值是Bool值，返回`NO`则过滤该信号
-	
-- **使用**
-
-	```
-	// 过滤:
-	// 每次信号发出，会先执行过滤条件判断.
-	[[_textField.rac_textSignal filter:^BOOL(NSString *value) {
-        
-        NSLog(@"原信号: %@", value);
-
-        // 过滤 长度 <= 3 的信号
-        return value.length > 3;
-        
-    }] subscribeNext:^(id x) {
-        
-        NSLog(@"长度大于3的信号：%@", x);
-    }];
-    
-    // 在_textField中输出12345
-	// 输出
-	2017-01-03 16:36:54.938 ReactiveCocoa进阶[4714:1552910] 原信号: 1
-	2017-01-03 16:36:55.383 ReactiveCocoa进阶[4714:1552910] 原信号: 12
-	2017-01-03 16:36:55.706 ReactiveCocoa进阶[4714:1552910] 原信号: 123
-	2017-01-03 16:36:56.842 ReactiveCocoa进阶[4714:1552910] 原信号: 1234
-	2017-01-03 16:36:56.842 ReactiveCocoa进阶[4714:1552910] 长度大于3的信号：1234
-	2017-01-03 16:36:58.350 ReactiveCocoa进阶[4714:1552910] 原信号: 12345
-	2017-01-03 16:36:58.351 ReactiveCocoa进阶[4714:1552910] 长度大于3的信号：12345
-	```
-	
-###### ignore
-
-- **作用**
-
-	忽略某些信号.
-	
-- **使用**
-
-- **作用**
-
-	忽略某些值的信号.
-	
-	底层调用了 `filter` 与 过滤值进行比较，若相等返回则 `NO`
-	
-- **使用**
-
-	```
-  	// 内部调用filter过滤，忽略掉字符为 @“1”的值
-[[_textField.rac_textSignal ignore:@"1"] subscribeNext:^(id x) {
-
- 	 NSLog(@"%@",x);
-}];
-
-
-	```
-
-###### distinctUntilChanged
-
-- **作用**
-
-	当上一次的值和当前的值有明显的变化就会发出信号，否则会被忽略掉。
-	
-- **使用**
-
-	```
-	[[_textField.rac_textSignal distinctUntilChanged] subscribeNext:^(id x) {
-        
-        NSLog(@"%@",x);
-    }];
-	```
-	
-###### skip	
-
-- **作用**
-
-	跳过 **第N次** 的发送的信号.
-	
-- **使用**
-	
-	```
-// 表示输入第一次，不会被监听到，跳过第一次发出的信号
-[[_textField.rac_textSignal skip:1] subscribeNext:^(id x) {
-
-   NSLog(@"%@",x);
-}];
-	```
-
-
-
-##### take
-- **作用**
-
-	取 **前N次** 的发送的信号.
-- **使用**
-
-	```
-	RACSubject *subject = [RACSubject subject] ;
-    
-    // 取 前两次 发送的信号
-    [[subject take:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 输出
-	2017-01-03 17:35:54.566 ReactiveCocoa进阶[4969:1677908] 1
-	2017-01-03 17:35:54.567 ReactiveCocoa进阶[4969:1677908] 2
-	```
-
-###### takeLast
-
-- **作用**
-
-	取 **最后N次** 的发送的信号
-	
-	前提条件，订阅者必须调用完成 `sendCompleted`，因为只有完成，就知道总共有多少信号.
-	
-- **使用**	
-
-	```
-	RACSubject *subject = [RACSubject subject] ;
-    
-    // 取 后两次 发送的信号
-    [[subject takeLast:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 必须 跳用完成
-    [subject sendCompleted];
-	```
-
-###### takeUntil
-
-- **作用**
-
-	获取信号直到某个信号执行完成
-- **使用**	
-
-	```
-	// 监听文本框的改变直到当前对象被销毁
-[_textField.rac_textSignal takeUntil:self.rac_willDeallocSignal];
-	```
-	
-###### switchToLatest
-- **作用**
-
-	用于signalOfSignals（信号的信号），有时候信号也会发出信号，会在signalOfSignals中，获取signalOfSignals发送的最新信号。
-	
-- **注意**
-
-	switchToLatest：只能用于信号中的信号
-
-- **使用**	
-
-	```
-	RACSubject *signalOfSignals = [RACSubject subject];
-    RACSubject *signal = [RACSubject subject];
-    
-    // 获取信号中信号最近发出信号，订阅最近发出的信号。
-    [signalOfSignals.switchToLatest subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [signalOfSignals sendNext:signal];
-    [signal sendNext:@1];
-	```
-
-#### 秩序
-
-秩序包括 `doNext` 和 `doCompleted` 这两个方法，主要是在 执行`sendNext` 或者 `sendCompleted`之前，先执行这些方法中Block。
-
-###### doNext 
-	
-执行`sendNext`之前，会先执行这个`doNext`的 Block
-
-###### doCompleted
-
-执行`sendCompleted`之前，会先执行这`doCompleted`的`Block`
-
-```
-[[[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-    
-    [subscriber sendNext:@"hi"];
-    
-    [subscriber sendCompleted];
-    
-    return nil;
-    
-}] doNext:^(id x) {
-    
-    // 执行 [subscriber sendNext:@"hi"] 之前会调用这个 Block
-    NSLog(@"doNext");
-    
-}] doCompleted:^{
-    
-    // 执行 [subscriber sendCompleted] 之前会调用这 Block
-    NSLog(@"doCompleted");
-}] subscribeNext:^(id x) {
-    
-    NSLog(@"%@", x);
-}];
-    
-
-```
-
-#### 线程
-
-**ReactiveCocoa** 中的线程操作 包括 `deliverOn` 和 `subscribeOn`这两种，将 *传递的内容* 或 创建信号时 *block中的代码* 切换到指定的线程中执行。
-
-###### deliverOn
-
-- **作用**
-
-	内容传递切换到制定线程中，副作用在原来线程中,把在创建信号时block中的代码称之为副作用。
-- **使用**
-
-	```
-	// 在子线程中执行
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        
-        [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-            NSLog(@"%@", [NSThread currentThread]);
-            
-            [subscriber sendNext:@123];
-            
-            [subscriber sendCompleted];
-            
-            return nil;
-        }]
-          deliverOn:[RACScheduler mainThreadScheduler]]
-          
-         subscribeNext:^(id x) {
-         
-             NSLog(@"%@", x);
-             
-             NSLog(@"%@", [NSThread currentThread]);
-         }];
-    });
-    
-    // 输出
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224535] <NSThread: 0x608000270f00>{number = 3, name = (null)}
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224482] 123
-2017-01-04 10:35:55.415 ReactiveCocoa进阶[1183:224482] <NSThread: 0x600000079bc0>{number = 1, name = main}
-	```
-	
-	可以看到`副作用`在 *子线程* 中执行，而 `传递的内容` 在 *主线程* 中接收
-
-
-###### subscribeOn
-- **作用**
-
-	**subscribeOn**则是将 `内容传递` 和 `副作用` 都会切换到指定线程中
-- **使用**
-
-	```
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        
-        [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-            NSLog(@"%@", [NSThread currentThread]);
-            
-            [subscriber sendNext:@123];
-            
-            [subscriber sendCompleted];
-            
-            return nil;
-        }]
-          subscribeOn:[RACScheduler mainThreadScheduler]] //传递的内容到主线程中
-         subscribeNext:^(id x) {
-         
-             NSLog(@"%@", x);
-             
-             NSLog(@"%@", [NSThread currentThread]);
-         }];
-    });	
-	//
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] <NSThread: 0x608000077640>{number = 1, name = main}
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] 123
-2017-01-04 10:44:47.558 ReactiveCocoa进阶[1243:275126] <NSThread: 0x608000077640>{number = 1, name = main}
-	```
-	
-	`内容传递` 和 `副作用` 都切换到了 *主线程* 执行
-	
-#### 时间
-
-时间操作就会设置信号超时，定时和延时。
-
-###### interval 定时
-- **作用**
-
-	定时：每隔一段时间发出信号
-	
-	```
-	// 每隔1秒发送信号，指定当前线程执行
-	[[RACSignal interval:1 onScheduler:[RACScheduler currentScheduler]] subscribeNext:^(id x) {
-        
-        NSLog(@"定时:%@", x);
-    }];
-    
-	// 输出
-	2017-01-04 13:48:55.196 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:55 +0000
-	2017-01-04 13:48:56.195 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:56 +0000
-	2017-01-04 13:48:57.196 ReactiveCocoa进阶[1980:492724] 定时:2017-01-04 05:48:57 +0000
-	```
-
-
-###### timeout 超时
-
-- **作用**
-
-	超时，可以让一个信号在一定的时间后，自动报错。
-	
-	```
-	RACSignal *signal = [[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        // 不发送信号，模拟超时状态
-        // [subscriber sendNext:@"hello"];
-        //[subscriber sendCompleted];
-        
-        return nil;
-    }] timeout:1 onScheduler:[RACScheduler currentScheduler]];// 设置1秒超时
-    
-    [signal subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    } error:^(NSError *error) {
-        
-        NSLog(@"%@", error);
-    }];
-    
-    // 执行代码 1秒后 输出：
-    2017-01-04 13:48:55.195 ReactiveCocoa进阶[1980:492724] Error Domain=RACSignalErrorDomain Code=1 "(null)"
-	```
-
-###### delay 延时
-- **作用**
-
-	延时，延迟一段时间后发送信号
-	
-	```
-	RACSignal *signal2 = [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@"延迟输出"];
-        
-        return nil;
-    }] delay:2] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    // 执行代码 2秒后 输出
-    2017-01-04 13:55:23.751 ReactiveCocoa进阶[2030:525038] 延迟输出
-	```
-
-
-#### 重复
-
-###### retry
-
-- **作用**
-
-	重试：只要 发送错误 `sendError:`,就会 重新执行 创建信号的Block 直到成功
-	
-	```
-	__block int i = 0;
-    
-    [[[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        if (i == 5) {
-            
-            [subscriber sendNext:@"Hello"];
-            
-        } else {
-            
-            // 发送错误
-            NSLog(@"收到错误:%d", i);
-            [subscriber sendError:nil];
-        }
-        
-        i++;
-        
-        return nil;
-        
-    }] retry] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-        
-    } error:^(NSError *error) {
-        
-        NSLog(@"%@", error);
-        
-    }];
-
-	// 输出
-2017-01-04 14:36:51.594 ReactiveCocoa进阶[2443:667226] 收到错误信息:0
-2017-01-04 14:36:51.595 ReactiveCocoa进阶[2443:667226] 收到错误信息:1
-2017-01-04 14:36:51.595 ReactiveCocoa进阶[2443:667226] 收到错误信息:2
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] 收到错误信息:3
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] 收到错误信息:4
-2017-01-04 14:36:51.596 ReactiveCocoa进阶[2443:667226] Hello
-
-	```
-
-###### replay
-
-- **作用**
-
-	重放：当一个信号被多次订阅,反复播放内容
-	
-	```
-	RACSignal *signal = [[RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-        
-        [subscriber sendNext:@1];
-        [subscriber sendNext:@2];
-        
-        return nil;
-    }] replay];
-    
-    [signal subscribeNext:^(id x) {
-        NSLog(@"%@", x);
-    }];
-    
-    [signal subscribeNext:^(id x) {
-        NSLog(@"%@", x);
-    }];
-    
-    // 输出
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 1
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 2
-2017-01-04 14:51:01.934 ReactiveCocoa进阶[2544:706740] 1
-2017-01-04 14:51:01.935 ReactiveCocoa进阶[2544:706740] 2
-	```
-
-
-###### throttle
-
-- **作用**
-
-	节流:当某个信号发送比较频繁时，可以使用节流，在某一段时间不发送信号内容，过了一段时间获取信号的最新内容发出。
-	
-	```
-	RACSubject *subject = [RACSubject subject];
-    
-    // 节流1秒，1秒后接收最后一个发送的信号
-    [[subject throttle:1] subscribeNext:^(id x) {
-        
-        NSLog(@"%@", x);
-    }];
-    
-    [subject sendNext:@1];
-    [subject sendNext:@2];
-    [subject sendNext:@3];
-    
-    // 输出
-    2017-01-04 15:02:37.543 ReactiveCocoa进阶[2731:758193] 3
-	```
-
-# MVVM架构思想
----
-程序为什么要有架构？便于程序开发与维护.
-
-#### 常见的架构
-- **MVC**
-
-	M:模型 V:视图 C:控制器
-
-- **MVVM**
-
-	M:模型 V:视图+控制器 VM:视图模型
-
-- **MVCS**
-
-	 M:模型 V:视图 C:控制器 C:服务类
-
-- [**VIPER**](http://www.cocoachina.com/ios/20140703/9016.html)
-
-	V:视图 I:交互器 P:展示器 E:实体 R:路由
-
-#### MVVM介绍
-
-- 模型(M):保存视图数据。
-
-- 视图+控制器(V):展示内容 + 如何展示
-
-- 视图模型(VM):处理展示的业务逻辑，包括按钮的点击，数据的请求和解析等等。
-
-# 实战一：登录界面
-
-#### 需求
-1. 监听两个文本框的内容
-2. 有内容登录按键才允许按钮点击
-3. 返回登录结果
-
-#### 分析
-1. 界面的所有业务逻辑都交给控制器做处理
-2. 在MVVM架构中把控制器的业务全部搬去VM模型，也就是每个控制器对应一个VM模型.
-
-#### 步骤
-1. 创建LoginViewModel类，处理登录界面业务逻辑.
-2. 这个类里面应该保存着账号的信息，创建一个账号Account模型
-3. LoginViewModel应该保存着账号信息Account模型。
-4. 需要时刻监听Account模型中的账号和密码的改变，怎么监听？
-5. 在非RAC开发中，都是习惯赋值，在RAC开发中，需要改变开发思维，由赋值转变为绑定，可以在一开始初始化的时候，就给Account模型中的属性绑定，并不需要重写set方法。
-6. 每次Account模型的值改变，就需要判断按钮能否点击，在VM模型中做处理，给外界提供一个能否点击按钮的信号.
-7. 这个登录信号需要判断Account中账号和密码是否有值，用KVO监听这两个值的改变，把他们聚合成登录信号.
-8. 监听按钮的点击，由VM处理，应该给VM声明一个RACCommand，专门处理登录业务逻辑.
-9. 执行命令，把数据包装成信号传递出去
-10. 监听命令中信号的数据传递
-11. 监听命令的执行时刻
-
-
-
-#### 运行效果
-
-![登录界面](https://ww3.sinaimg.cn/large/006y8lVagw1fbgvoh8yu6j30bj0l43yz.jpg)
-
-#### 代码
-
-`MyViewController.m`
-
-```
-#import "MyViewController.h"
-#import "LoginViewModel.h"
-
-@interface MyViewController ()
-
-@property (nonatomic, strong) LoginViewModel *loginViewModel;
-
-@property (weak, nonatomic) IBOutlet UITextField *accountField;
-
-@property (weak, nonatomic) IBOutlet UITextField *pwdField;
-
-@property (weak, nonatomic) IBOutlet UIButton *loginBtn;
-
-@end
-
-@implementation MyViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    [self bindModel];
-    
-}
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
-}
-
-
-
-// 视图模型绑定
-- (void)bindModel {
-
-    // 给模型的属性绑定信号
-    //
-    RAC(self.loginViewModel.account, account) = _accountField.rac_textSignal;
-    RAC(self.loginViewModel.account, pwd) = _pwdField.rac_textSignal;
-    
-    RAC(self.loginBtn, enabled) = self.loginViewModel.enableLoginSignal;
-    
-    // 监听登录点击
-    [[_loginBtn rac_signalForControlEvents:UIControlEventTouchUpInside] subscribeNext:^(id x) {
-        
-        [self.loginViewModel.LoginCommand execute:nil];
-    }];
-    
-}
-- (IBAction)btnTap:(id)sender {
-    
-    
-}
-
-#pragma mark - lazyLoad
-
-- (LoginViewModel *)loginViewModel {
-    
-    if (nil == _loginViewModel) {
-        _loginViewModel = [[LoginViewModel alloc] init];
-    }
-    
-    return _loginViewModel;
-}
-```	
-		
-`LoginViewModel.h`
-
-```
-#import <UIKit/UIKit.h>
-
-@interface Account : NSObject
-
-@property (nonatomic, strong) NSString *account;
-@property (nonatomic, strong) NSString *pwd;
-
-@end
-
-
-@interface LoginViewModel : UIViewController
-
-@property (nonatomic, strong) Account *account;
-
-// 是否允许登录的信号
-@property (nonatomic, strong, readonly) RACSignal *enableLoginSignal;
-
-@property (nonatomic, strong, readonly) RACCommand *LoginCommand;
-
-@end
-
-```
-
-`LoginViewModel.m`
-
-```
-#import "LoginViewModel.h"
-
-@implementation Account
-
-@end
-
-
-@interface LoginViewModel ()
-
-@end
-
-@implementation LoginViewModel
-
-- (instancetype)init {
-    
-    if (self = [super init]) {
-        [self initialBind];
-    }
-    return self;
-}
-
-- (void)initialBind {
-
-    // 监听账号属性改变， 把他们合成一个信号
-    _enableLoginSignal = [RACSubject combineLatest:@[RACObserve(self.account, account), RACObserve(self.account, pwd)] reduce:^id(NSString *accout, NSString *pwd){
-        
-        return @(accout.length && pwd.length);
-    }];
-    
-    // 处理业务逻辑
-    _LoginCommand = [[RACCommand alloc] initWithSignalBlock:^RACSignal *(id input) {
-        
-        NSLog(@"点击了登录");
-        return [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-            
-            // 模仿网络延迟
-
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                
-                // 返回登录成功 发送成功信号
-                [subscriber sendNext:@"登录成功"];
-            });
-            
-            return nil;
-        }];
-    }];
-    
-    
-    // 监听登录产生的数据
-    [_LoginCommand.executionSignals.switchToLatest subscribeNext:^(id x) {
-       
-        if ([x isEqualToString:@"登录成功"]) {
-            NSLog(@"登录成功");
-        }
-        
-    }];
-    
-    [[_LoginCommand.executing skip:1] subscribeNext:^(id x) {
-        
-        if ([x isEqualToNumber:@(YES)]) {
-            
-            NSLog(@"正在登陆...");
-        } else {
-            
-        // 登录成功
-        NSLog(@"登陆成功");
-        
-        }
-        
-    }];
-}
-
-#pragma mark - lazyLoad
-
-- (Account *)account
-{
-    if (_account == nil) {
-        _account = [[Account alloc] init];
-    }
-    return _account;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-}
-
-@end
-
-```
-
-# 实战二：网络请求数据
-
-#### 需求
-1. 请求一段网络数据，将请求到的数据在`tableView`上展示
-2. 该数据为豆瓣图书的搜索返回结果，URL：url:https://api.douban.com/v2/book/search?q=悟空传
-
-#### 分析
-1. 界面的所有业务逻辑都交给**控制器**做处理
-2. 网络请求交给**MV**模型处理
-
-#### 步骤
-
-1. 控制器提供一个视图模型（requesViewModel），处理界面的业务逻辑
-2. VM提供一个命令，处理请求业务逻辑
-3. 在创建命令的block中，会把请求包装成一个信号，等请求成功的时候，就会把数据传递出去。
-4. 请求数据成功，应该把字典转换成模型，保存到视图模型中，控制器想用就直接从视图模型中获取。
-
-#### 其他
-
-网络请求与图片缓存用到了[AFNetworking](https://github.com/AFNetworking/AFNetworking) 和 [SDWebImage](https://github.com/rs/SDWebImage),自行在Pods中导入。
-
-```
-platform :ios, '8.0'
-
-target 'ReactiveCocoa进阶' do
-
-use_frameworks!
-pod 'ReactiveCocoa', '~> 2.5'
-pod 'AFNetworking'
-pod 'SDWebImage'
-end
-```
-
-#### 运行效果
-
-![](https://ww3.sinaimg.cn/large/006y8lVagw1fbgw1xnz74j30bj0l4408.jpg)
-
-
-#### 代码
-
-`SearchViewController.m`
-
-```
-#import "SearchViewController.h"
-#import "RequestViewModel.h"
-
-@interface SearchViewController ()<UITableViewDataSource>
-
-@property (nonatomic, strong) UITableView *tableView;
-
-@property (nonatomic, strong) RequestViewModel *requesViewModel;
-
-@end
-
-@implementation SearchViewController
-
-- (RequestViewModel *)requesViewModel
-{
-    if (_requesViewModel == nil) {
-        _requesViewModel = [[RequestViewModel alloc] init];
-    }
-    return _requesViewModel;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    
-    
-    self.tableView = [[UITableView alloc] initWithFrame:self.view.frame];
-    
-    self.tableView.dataSource = self;
-    
-    [self.view addSubview:self.tableView];
-    
-    //
-    RACSignal *requesSiganl = [self.requesViewModel.reuqesCommand execute:nil];
-    
-    [requesSiganl subscribeNext:^(NSArray *x) {
-        
-        self.requesViewModel.models = x;
-        
-        [self.tableView reloadData];
-    }];
-}
-
-- (void)didReceiveMemoryWarning {
-    [super didReceiveMemoryWarning];
-    // Dispose of any resources that can be recreated.
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
-{
-    return self.requesViewModel.models.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    static NSString *ID = @"cell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:ID];
-    if (cell == nil) {
-        
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:ID];
-    }
-    
-    Book *book = self.requesViewModel.models[indexPath.row];
-    cell.detailTextLabel.text = book.subtitle;
-    cell.textLabel.text = book.title;
-    
-    [cell.imageView sd_setImageWithURL:[NSURL URLWithString:book.image] placeholderImage:[UIImage imageNamed:@"cellImage"]];
-    
-    
-    return cell;
-}
-@end
-```
-
-`RequestViewModel.h`
-
-```
-#import <Foundation/Foundation.h>
-
-@interface Book : NSObject
-
-@property (nonatomic, copy) NSString *subtitle;
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *image;
-
-@end
-
-@interface RequestViewModel : NSObject
-
-// 请求命令
-@property (nonatomic, strong, readonly) RACCommand *reuqesCommand;
-
-//模型数组
-@property (nonatomic, strong) NSArray *models;
-
-
-@end
-```
-
-`RequestViewModel.m`
-
-```
-#import "RequestViewModel.h"
-
-@implementation Book
-
-- (instancetype)initWithValue:(NSDictionary *)value {
-    
-    if (self = [super init]) {
-        
-        self.title = value[@"title"];
-        self.subtitle = value[@"subtitle"];
-        self.image = value[@"image"];
-    }
-    return self;
-}
-
-+ (Book *)bookWithDict:(NSDictionary *)value {
-    
-    return [[self alloc] initWithValue:value];
-}
-
-
-
-@end
-
-@implementation RequestViewModel
-
-- (instancetype)init
-{
-    if (self = [super init]) {
-        
-        [self initialBind];
-    }
-    return self;
-}
-
-
-- (void)initialBind
-{
-    _reuqesCommand = [[RACCommand alloc] initWithSignalBlock:^RACSignal *(id input) {
-        
-      RACSignal *requestSiganl = [RACSignal createSignal:^RACDisposable *(id<RACSubscriber> subscriber) {
-          
-          NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
-          parameters[@"q"] = @"悟空传";
-          
-          //
-          [[AFHTTPSessionManager manager] GET:@"https://api.douban.com/v2/book/search" parameters:parameters progress:^(NSProgress * _Nonnull downloadProgress) {
-              
-              NSLog(@"downloadProgress: %@", downloadProgress);
-          } success:^(NSURLSessionDataTask * _Nonnull task, id  _Nullable responseObject) {
-              
-              // 数据请求成功就讲数据发送出去
-              NSLog(@"responseObject:%@", responseObject);
-              
-              [subscriber sendNext:responseObject];
-              
-              [subscriber sendCompleted];
-              
-          } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-              
-              NSLog(@"error: %@", error);
-          }];
-          
-          
-         return nil;
-      }];
-        
-        // 在返回数据信号时，把数据中的字典映射成模型信号，传递出去
-        return [requestSiganl map:^id(NSDictionary *value) {
-            
-            NSMutableArray *dictArr = value[@"books"];
-            
-            NSArray *modelArr = [[dictArr.rac_sequence map:^id(id value) {
-                
-                return [Book bookWithDict:value];
-                
-            }] array];
-            
-            return modelArr;
-            
-        }];
-        
-    }];
-}
-
-
-@end
-
-```
-
->最后附上GitHub：<https://github.com/qiubaiying/ReactiveCocoa_Demo>
