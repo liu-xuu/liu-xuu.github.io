@@ -114,4 +114,4 @@ service-worker: true
 #]
 
 
-permalink: /:categories/:title/
+#permalink: /:categories/:title/
