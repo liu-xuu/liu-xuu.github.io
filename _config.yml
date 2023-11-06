@@ -1,7 +1,7 @@
 # Site settings
 title: Lx Blog
 SEOTitle: 刘昫的博客 | LX Blog
-header-img: img/post-bg-desk.jpg
+#header-img: img/post-bg-desk.jpg
 email: liuxuA1@outlook.com
 description: "Every failure is leading towards success."
 keyword: "LX, LX Blog, 刘昫的博客, C++, ROS, 路径规划"
